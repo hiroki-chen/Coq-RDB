@@ -1,0 +1,12 @@
+CREATE TABLE "purchases"
+SCHEMA (nat, nat, string, nat)
+VALUES { (0, 0, "pencil", 5),
+         (1, 1, "paper",  8), 
+         (2, 0, "pen",    8), 
+         (3, 2, "pen",    8), 
+         (4, 4, "paper",  7), 
+         (5, 3, "pencil", 3), 
+         (6, 1, "pen",    5), 
+         (7, 4, "paper",  7), 
+         (8, 2, "pencil", 3), 
+         (9, 3, "pen",    5) }

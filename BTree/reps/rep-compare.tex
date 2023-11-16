@@ -1,0 +1,444 @@
+\documentclass{article}
+
+\usepackage{listings}
+%\usepackage{fullpage}
+%\usepackage{savetrees}
+\usepackage[margin=1cm]{geometry}
+
+\newcommand{\hide}[1]{}
+
+\lstdefinelanguage{coq}
+  { morecomment=[s]{(*}{*)}
+  , sensitive=true
+  , morekeywords={Fixpoint,Definition,nat,Inductive,Variable,Set,Type,Theorem,
+                  Lemma,Variable,match,with,as,end,option,struct,Qed,Hypothesis,
+                  Parameter,Admitted,Proof,
+                  let,in,return,fun,forall,exists,Record,Some,None,nil}
+  , keywordstyle=\bf
+  }
+
+\lstset{frame=single,basicstyle=\small\tt,language=coq}
+
+\title{B+Tree Representations}
+\author{Gregory Malecha}
+
+\begin{document}
+
+\maketitle
+\section{Common Code}
+
+\begin{lstlisting}
+Variable SIZE : nat.
+Variable pfMin : SIZE > 1.
+Lemma SIZE_S : SIZE = S (SIZE - 1).
+  omega.
+Qed.
+
+Variable key : Set.
+Variable value : key -> Set.
+Definition repLeaf {T : Set} (ary : array) (s l : nat) (ls : list T) : hprop :=
+  {@ (p :~~ array_plus ary i in p ~~> match nth_error ls (i - s) with
+                                        | None => @None T
+                                        | Some x => Some x
+                                      end) | i <- s + l }.
+\end{lstlisting}
+
+\newpage
+\section{Relational ({\tt BPlusTreeRelational.v})}
+From the SD paper~\cite{sexton2008rabtossl}.
+
+\begin{lstlisting}
+Fixpoint repBranch
+  (bptree : ptr -> nat ->option ptr -> option ptr -> list (sigTS value) -> hprop) 
+  (ary : array) (i l : nat)
+  (ls : list (ptr * key * nat * list (sigTS value)))
+  (nxt : ptr) {struct l} : hprop :=
+  match l with
+    | 0   => __
+    | S l => 
+      match ls with
+        | nil =>
+          p :~~ array_plus ary i in
+          p ~~> @None (key * ptr) * 
+          repBranch bptree ary (S i) l nil nxt
+
+        | (((fp, k), n), st) :: nil =>
+          p :~~ array_plus ary i in
+          Exists p' :@ ptr,
+          p ~~> Some (k, p') *
+          bptree p' n (Some fp) (Some nxt) st *
+          repBranch bptree ary (S i) l nil nxt
+
+        | (((fp, k), n), st) :: ((((lp, _), _), _) :: _) as tl =>
+          p :~~ array_plus ary i in
+          Exists p' :@ ptr,
+          p ~~> Some (k, p') *
+          bptree p' n (Some fp) (Some lp) st *
+          repBranch bptree ary (S i) l tl nxt
+          
+      end
+  end.
+
+Fixpoint bptree (h : nat) (p : ptr) (n : nat) (fp lp : option ptr)
+  (ls : list (sigTS value)) {struct h} : hprop :=
+  match h with
+    | 0 =>
+      Exists ary :@ array,
+      p ~~> mkNode 0 ary lp * repLeaf ary 0 SIZE ls *
+      [Some p = fp] *
+      [length ls <= SIZE] * [div2 SIZE <= length ls] * [length ls = n]
+
+    | S h' =>
+      Exists children    :@ list (ptr * key * nat * list (sigTS value)),
+      Exists nxtChildren :@ list (sigTS value),
+      Exists nxtN        :@ nat,
+      Exists ary         :@ array,
+      Exists nxtP        :@ ptr,
+      Exists nxtPBase    :@ ptr,
+      p ~~> mkNode h ary (Some nxtP) *
+      repBranch (bptree h') ary 0 SIZE children nxtPBase *
+      bptree h' nxtP nxtN (Some nxtPBase) lp nxtChildren *
+      [flat_map (fun x => snd x) children ++ nxtChildren = ls] * [length ls = n]
+  end.
+\end{lstlisting}
+\newpage
+Modified to drop the branching factor which doesn't seem necessary
+\begin{lstlisting}
+Fixpoint repBranch
+  (bptree : ptr -> option ptr -> option ptr -> list (sigTS value) -> hprop) 
+  (ary : array) (i l : nat)
+  (ls : list (ptr * key * list (sigTS value)))
+  (nxt : ptr) {struct l} : hprop :=
+  match l with
+    | 0   => __
+    | S l => 
+      match ls with
+        | nil =>
+          p :~~ array_plus ary i in
+          p ~~> @None (key * ptr) * 
+          repBranch bptree ary (S i) l nil nxt
+
+        | ((fp, k), st) :: tl =>
+          p :~~ array_plus ary i in
+          Exists p' :@ ptr,
+          p ~~> Some (k, p') *
+          repBranch bptree ary (S i) l tl nxt *
+          match tl with
+            | nil => bptree p' (Some fp) (Some nxt) st
+            | ((lp, _), _) :: _ => bptree p' (Some fp) (Some lp) st
+          end           
+      end
+  end.
+
+Fixpoint bptree (h : nat) (p : ptr) (fp lp : option ptr)
+  (ls : list (sigTS value)) {struct h} : hprop :=
+  match h with
+    | 0 =>
+      Exists ary :@ array,
+      p ~~> mkNode 0 ary lp * repLeaf ary 0 SIZE ls *
+      [Some p = fp] *
+
+      [length ls <= SIZE] * [div2 SIZE <= length ls]
+    | S h' =>
+      Exists children    :@ list (ptr * key * list (sigTS value)),
+      Exists nxtChildren :@ list (sigTS value),
+      Exists ary         :@ array,
+      Exists nxtP        :@ ptr,
+      Exists nxtPBase    :@ ptr,
+
+      p ~~> mkNode h ary (Some nxtP) *
+
+      repBranch (bptree h') ary 0 SIZE children nxtPBase *
+      bptree h' nxtP (Some nxtPBase) lp nxtChildren *
+
+      [flat_map (fun x => snd x) children ++ nxtChildren = ls]
+    end.
+\end{lstlisting}
+
+\subsection{Iteration 3: Picking Existentials}
+\begin{lstlisting}
+Fixpoint repBranch
+    (bptree : ptr -> option ptr -> option ptr -> LiftOrder key -> LiftOrder key -> list (sigTS value) -> hprop) 
+    (ary : array) (i l : nat)
+    (ls : list (ptr * ptr * key * list (sigTS value)))
+    (fp lp : option ptr)
+    (min max : LiftOrder key) {struct l} : hprop :=
+    match l with
+      | 0   => [min #<= max] * [fp = lp]
+      | S l => 
+        match ls with
+          | nil =>
+            p :~~ array_plus ary i in
+            p ~~> @None (key * ptr) * 
+            repBranch bptree ary (S i) l nil fp lp min max
+
+          | (((fp', cp), k), st) :: tl =>
+            p :~~ array_plus ary i in
+            p ~~> Some (k, cp) *
+            bptree cp fp (Some fp') min (Val k) st *
+            repBranch bptree ary (S i) l tl (Some fp') lp (Val k) max
+
+        end
+    end.
+
+  Fixpoint bptree (h : nat) (p : ptr) (fp lp : option ptr) (min max : LiftOrder key) 
+    (ls : list (sigTS value)) {struct h} : hprop :=
+    match h with
+      | 0 =>
+        Exists ary :@ array,
+        p ~~> mkNode 0 ary lp * repLeaf ary 0 SIZE ls *
+        [Some p = fp] *
+
+        [length ls <= SIZE] * [div2 SIZE <= length ls]
+      | S h' =>
+        Exists children    :@ list (ptr * ptr * key * list (sigTS value)),
+        Exists nxtChildren :@ list (sigTS value),
+        Exists ary         :@ array,
+        Exists nxtP        :@ ptr,
+        let nxtMin   := last (map (fun x => Val (snd (fst x))) children) min in
+        let nxtPBase := last (map (fun x => Some (fst (fst (fst x)))) children) fp in
+
+        p ~~> mkNode h ary (Some nxtP) *
+
+        repBranch (bptree h') ary 0 SIZE children fp nxtPBase min nxtMin *
+        bptree h' nxtP nxtPBase lp nxtMin max nxtChildren *
+
+        [flat_map (fun x => snd x) children ++ nxtChildren = ls] *
+        [div2 SIZE <= length children] * [length children <= SIZE]
+    end.
+\end{lstlisting}
+
+\newpage
+\section{Pointers in the Model ({\tt BPlusTreeImpl2.v} \& {\tt BPlusTreeShadow.v})}
+
+\begin{lstlisting}
+Fixpoint ptree (n : nat) : Set :=
+  (ptr * match n return Set with
+           | 0 => list (sigTS value)
+           | S n => list (sigTS (fun _:key => ptree n)) * ptree n
+         end)%type.
+
+Definition repLeaf (T : Set) (ary : array) (s l : nat) (ls : list T) : hprop :=
+  {@ (p :~~ array_plus ary i in p ~~> match nth_error ls (i - s) with
+                                        | None => @None T
+                                        | Some x => Some x
+                                      end) | i <- s + l }.
+  
+Fixpoint lastPtr (h : nat) : ptree h -> ptr :=
+  match h as h return ptree h -> ptr with
+    | 0 => fun m => fst m
+    | S h => fun m => lastPtr h (snd (snd m))
+  end.
+Fixpoint firstPtr (h : nat) : ptree h -> ptr :=
+  match h as h return ptree h -> ptr with
+    | 0 => fun m => fst m
+    | S h => fun m => match fst (snd m) with
+                        | nil => firstPtr h (snd (snd m))
+                        | a :: _ => firstPtr h (projT2S a)
+                      end
+  end.
+Definition ptrFor (h : nat) : ptree h -> ptr :=
+  match h as h return ptree h -> ptr with
+    | 0 => fun x => fst x
+    | S n => fun x => fst x
+  end.
+
+Fixpoint repBranch (h : nat) (rep' : ptr -> option ptr -> ptree h -> hprop) 
+  (ary : array) (i l : nat) (ls : list (BranchCell h))
+  (nxt : ptr) {struct l} : hprop :=
+  match l with
+    | 0 => __
+    | S l => 
+      match ls with
+        | nil => p :~~ array_plus ary i in p ~~> @None (key * ptr) * 
+          repBranch h rep' ary (S i) l nil nxt
+        | f :: tl =>
+          p :~~ array_plus ary i in
+          let p' := ptrFor _ (projT2S f) in
+          p ~~> Some (projT1S f, p') *
+          repBranch h rep' ary (S i) l tl nxt *
+          match tl with
+            | nil => rep' p' (Some nxt) (projT2S f)
+            | r :: _ => rep' p' (Some (firstPtr _ (projT2S r))) (projT2S f)
+          end
+      end
+  end.
+
+Fixpoint rep' (n : nat) (p : ptr) (op_next : option ptr) {struct n}
+  : ptree n -> hprop :=
+  match n as n return ptree n -> hprop with 
+    | 0 => fun m =>
+      [p = ptrFor _ m] *
+      let (p,ls) := m in
+      Exists ary :@ array, p ~~> mkNode n ary op_next *
+      [array_length ary = SIZE] * [length ls <= SIZE] *
+      repLeaf ary 0 SIZE ls
+        
+    | S n' => fun m =>
+      [p = ptrFor _ m] *
+      let (p,m) := m in
+      let ls  := fst m in
+      let nxt := snd m in
+      Exists ary :@ array, p ~~> mkNode n ary (Some (ptrFor _ nxt)) *
+      [array_length ary = SIZE] * [length ls <= SIZE] *
+      repBranch n' (rep' n') ary 0 SIZE ls (firstPtr _ nxt) *
+      rep' n' (ptrFor _ nxt) op_next nxt
+  end.
+\end{lstlisting}
+
+\newpage
+The equivalent, possibly slightly better but probably more difficult to automate, is with a shadow model which just contains the pointers.
+
+\begin{lstlisting}
+Fixpoint tree (n : nat) : Set :=
+  match n with
+    | 0 => list (sigTS value)
+    | S n => list (sigTS (fun _:key => tree n)) * tree n
+  end%type.
+
+Fixpoint dlist (T : Set) (f : T -> Set) (ls : list T) : Set :=
+  match ls with 
+    | nil => unit
+    | a :: b => prod (f a) (dlist f b)
+  end.
+
+Fixpoint ptree {n : nat} : tree n -> Set :=
+  match n as n return tree n -> Set with
+    | 0   => fun _ => ptr
+    | S n => fun ls => 
+      dlist (fun x => @ptree n (projT2S x)) (fst ls) * @ptree n (snd ls)
+  end%type.
+
+Definition repLeaf (T : Set) (ary : array) (s l : nat) (ls : list T) : hprop :=
+  {@ (p :~~ array_plus ary i in p ~~> match nth_error ls (i - s) with
+                                        | None => @None T
+                                        | Some x => Some x
+                                      end) | i <- s + l }.
+
+Fixpoint lastPtr {h : nat} : forall tr : tree h, ptree tr -> ptr :=
+  match h as h return forall tr : tree h, ptree tr -> ptr with
+    | 0 => fun _ pm => pm
+    | S h => fun m pm => lastPtr (snd m) (snd pm)
+  end.
+
+Fixpoint firstPtr {h : nat} : forall tr : tree h, ptree tr -> ptr :=
+  match h as h return forall tr : tree h, ptree tr -> ptr with
+    | 0   => fun _ pm => pm
+    | S h => fun m => match m as m return @ptree (S h) m -> ptr with
+                        | (nil,rm)   => fun pm => firstPtr rm (snd pm)
+                        | (a :: _,_) => fun pm => firstPtr (projT2S a) (fst (fst pm))
+                      end
+  end.
+
+Fixpoint repBranch (h : nat)
+  (rep' : ptr -> option ptr -> forall tr : tree h, ptree tr -> hprop) 
+  (ary : array) (i l : nat)
+  (ls : list (sigTS (fun _:key => tree h)))
+  (pls : dlist (fun x => @ptree h (projT2S x)) ls)
+  (nxt : ptr) {struct l} : hprop :=
+  match l with
+    | 0 => __
+    | S l => 
+      match ls as ls 
+        return dlist (fun x => @ptree h (projT2S x)) ls -> hprop with
+        | nil => fun pls => p :~~ array_plus ary i in p ~~> @None (key * ptr) * 
+          repBranch h rep' ary (S i) l nil pls nxt
+        | f :: tl => fun pls =>
+          match tl as tl 
+            return dlist (fun x => @ptree h (projT2S x)) tl -> hprop  with
+            | nil => fun _ =>
+              p :~~ array_plus ary i in
+              Exists p' :@ ptr,
+              p ~~> Some (projT1S f, p') *
+              rep' p' (Some nxt) (projT2S f) (fst pls) *
+              repBranch h rep' ary (S i) l tl (snd pls) nxt
+            | r :: rr => fun pls' => 
+              p :~~ array_plus ary i in
+              Exists p' :@ ptr,
+              let next_p := Some (firstPtr (projT2S r) (fst pls')) in
+              p ~~> Some (projT1S f, p') *
+              rep' p' next_p (projT2S f) (fst pls) *
+              repBranch h rep' ary (S i) l tl (snd pls) nxt
+          end (snd pls)
+      end pls
+  end.
+
+Fixpoint rep' (n : nat) (par : option ptr) (p : ptr) (op_next : option ptr) {struct n} 
+    : forall tr : tree n, ptree tr -> hprop :=
+    match n as n return forall tr : tree n, ptree tr -> hprop with 
+      | 0 => fun m pm =>
+        [p = pm] *
+        Exists ary :@ array,
+        p ~~> mkNode n par ary op_next *
+        [array_length ary = SIZE] * [length m <= SIZE] *
+        repLeaf ary 0 SIZE m
+        
+      | S n' => fun m pm =>
+        Exists ary :@ array, Exists p' :@ ptr,
+        p ~~> mkNode n par ary (Some p') *
+        [array_length ary = SIZE] * [length (fst m) <= SIZE] *
+        repBranch n' (rep' n' (Some p)) ary 0 SIZE (fst m) (fst pm) (firstPtr (snd m) (snd pm)) *
+        rep' n' (Some p) p' op_next (snd m) (snd pm)
+    end.
+
+  Definition BptMap := ptr.
+  Definition Model := sigTS tree.
+
+  Definition rep (p : BptMap) (m : Model) : hprop :=
+    match m with
+      | existTS h t => 
+        [inv h t MinK MaxK] *
+        Exists pt :@ ptree t, rep' h None p None t pt
+    end.
+\end{lstlisting}
+
+\hide{
+\newpage
+\section{Continuation ({\tt BPlusTreeContinuation.v})}
+
+\begin{lstlisting}
+Fixpoint repBranch (h : nat)
+  (rep' : ptr -> option ptr -> (option ptr -> hprop) -> tree h -> hprop) 
+  (ary : array) (i : nat) (ls : list (sigTS (fun _:key => tree h)))
+  (op : option ptr) (c : option ptr-> hprop) {struct ls} : hprop :=
+  match ls with
+    | nil =>
+      {@ (p :~~ array_plus ary i in p ~~> @None (key * ptr)) | i <- i + (SIZE - i)} * 
+      c op
+    | f :: r => 
+      p :~~ array_plus ary i in Exists p' :@ ptr, p ~~> (Some (projT1S f, p')) *
+      rep' p' op (fun op => repBranch h rep' ary (S i) r op c) (projT2S f)
+  end.
+
+Fixpoint rep' (n : nat) (p : ptr) (op : option ptr) 
+  (c : option ptr -> hprop) (t : tree n) {struct n} : hprop :=
+  Exists a :@ nodeType, p ~~> a * [height a = n] *
+  match n as n return tree n -> hprop with 
+    | 0 => fun ls =>
+      [array_length (content a) = SIZE] * [op = Some p] * [length ls <= SIZE] *
+      repLeaf (content a) 0 SIZE ls * (c (next a))
+        
+    | S n' => fun m =>
+      let ls  := fst m in
+      let nxt := snd m in
+      [array_length (content a) = SIZE] * [length ls <= SIZE] *
+      Exists np :@ ptr, [next a = Some np] *
+      repBranch n' (rep' n') (content a) 0 ls op 
+          (fun op => Exists p' :@ ptr, np ~~> p' * rep' n' p' op c nxt)
+  end t.
+
+Definition tH := sigTS tree.
+Definition BptMap := (ptr * [tH])%type.
+
+Definition rep (t : BptMap) (m : Model) : hprop :=
+  let p := fst t in
+  bpt :~~ snd t in
+  match bpt with
+    | existTS h t => Exists hdl :@ ptr,
+      [m = as_map h t] *
+      rep' h p (Some hdl) (fun x:option ptr => [x = None]) t * [inv h t MinK MaxK]
+  end.
+\end{lstlisting}
+}
+
+\end{document}

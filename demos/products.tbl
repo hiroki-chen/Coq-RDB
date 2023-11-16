@@ -1,0 +1,5 @@
+CREATE TABLE "products"
+SCHEMA (string, nat)
+VALUES { ("paper", 3) ,
+         ("pencil", 1) ,
+	 ("pen", 2) }

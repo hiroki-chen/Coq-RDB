@@ -1,0 +1,6 @@
+CREATE TABLE "clients" 
+SCHEMA (nat, string) 
+VALUES { (0, "Alice"),
+         (1, "Bob"),
+	 (2, "Carol"),
+	 (3, "David") }
